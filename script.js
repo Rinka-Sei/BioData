@@ -1,57 +1,103 @@
 const { jsPDF } = window.jspdf;
 
-function sanitizeInput(input) {
+// 1. Helper: Clean HTML tags from strings
+function sanitize(str) {
   const div = document.createElement("div");
-  div.innerText = input;
-  return div.innerHTML.trim().replace(/<[^>]*>?/gm, "");
+  div.innerText = str || "";
+  return div.innerHTML.trim();
 }
 
+// 2. Autocomplete Logic (Photon API - Free/No Key)
+function initAutocomplete() {
+  const input = document.getElementById("address_line1");
+  const results = document.getElementById("autocomplete-results");
+  let timeout = null;
+
+  input.addEventListener("input", () => {
+    clearTimeout(timeout);
+    const query = input.value;
+    if (query.length < 3) { results.innerHTML = ""; return; }
+
+    timeout = setTimeout(() => {
+      fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=5`)
+        .then(res => res.json())
+        .then(data => {
+          results.innerHTML = "";
+          data.features.forEach(f => {
+            const p = f.properties;
+            const full = [p.name, p.street, p.city, p.country].filter(Boolean).join(", ");
+            const item = document.createElement("div");
+            item.innerHTML = `<strong>${p.name || ""}</strong> <small>${full}</small>`;
+            item.onclick = () => { input.value = full; results.innerHTML = ""; };
+            results.appendChild(item);
+          });
+        });
+    }, 300);
+  });
+  document.addEventListener("click", (e) => { if (e.target !== input) results.innerHTML = ""; });
+}
+
+// 3. Data Gathering
 function gatherData() {
   const form = document.getElementById("bioDataForm");
-  if (!form.checkValidity()) {
-    form.reportValidity();
-    console.error("Form validation failed. PDF export aborted.");
-    return null;
-  }
-
-  const firstName = sanitizeInput(document.getElementById("first_name").value);
-  const lastName = sanitizeInput(document.getElementById("last_name").value);
-  const dob = document.getElementById("birthdate").value;
-  const gender = document.getElementById("gender").value;
-  const nationality = sanitizeInput(document.getElementById("country").value);
-  const email = sanitizeInput(document.getElementById("email").value);
-  const phone = sanitizeInput(document.getElementById("phone_number").value);
-  const address = sanitizeInput(document.getElementById("address_line1").value);
-  const now = new Date();
+  if (!form.checkValidity()) { form.reportValidity(); return null; }
 
   return {
-    firstName,
-    lastName,
-    dob,
-    gender,
-    nationality,
-    email,
-    phone,
-    address,
-    now,
+    firstName: sanitize(document.getElementById("first_name").value),
+    lastName: sanitize(document.getElementById("last_name").value),
+    dob: document.getElementById("birthdate").value,
+    gender: document.getElementById("gender").value,
+    height: document.getElementById("height").value,
+    weight: document.getElementById("weight").value,
+    bloodType: document.getElementById("blood_type").value,
+    email: sanitize(document.getElementById("email").value),
+    address: sanitize(document.getElementById("address_line1").value),
+    now: new Date()
   };
 }
 
-function generateFilename(data, extension) {
-  const datePart = data.now.toISOString().slice(0, 10).replace(/-/g, "");
-  const timePart = [
-    String(data.now.getHours()).padStart(2, "0"),
-    String(data.now.getMinutes()).padStart(2, "0"),
-    String(data.now.getSeconds()).padStart(2, "0"),
-  ].join("");
-  return `${data.lastName}_${data.firstName}_${datePart}_${timePart}.${extension}`.toLowerCase();
+// 4. Export Functions
+function exportToPdf() {
+  const data = gatherData();
+  if (!data) return;
+
+  const template = document.getElementById("pdf-content-template");
+  template.innerHTML = `
+    <div style="display:flex; align-items:center; border-bottom:2pt solid #007bff; padding-bottom:10px; margin-bottom:20px;">
+        <img src="health-data.png" style="width:50px; height:50px; margin-right:15px;">
+        <h1 style="margin:0; color:#007bff; font-family:sans-serif;">MEDICAL BIO-DATA</h1>
+    </div>
+    <div style="margin-bottom:20px;">
+        <h3>Personal Details</h3>
+        <p><strong>Full Name:</strong> ${data.firstName} ${data.lastName}</p>
+        <p><strong>DOB:</strong> ${data.dob} | <strong>Gender:</strong> ${data.gender}</p>
+    </div>
+    <div style="margin-bottom:20px;">
+        <h3>Health Statistics</h3>
+        <p><strong>Height:</strong> ${data.height} cm | <strong>Weight:</strong> ${data.weight} kg</p>
+        <p><strong>Blood Type:</strong> ${data.bloodType || 'N/A'}</p>
+    </div>
+    <div>
+        <h3>Contact & Address</h3>
+        <p><strong>Email:</strong> ${data.email}</p>
+        <p><strong>Address:</strong> ${data.address}</p>
+    </div>
+    <p style="font-size:8pt; color:gray; margin-top:40px;">Generated on: ${data.now.toLocaleString()}</p>
+  `;
+
+  template.style.display = "block";
+  html2canvas(template, { scale: 2 }).then(canvas => {
+    const pdf = new jsPDF("p", "in", "letter");
+    const imgData = canvas.toDataURL("image/jpeg", 1.0);
+    pdf.addImage(imgData, "JPEG", 0.5, 0.5, 7.5, (canvas.height * 7.5) / canvas.width);
+    pdf.save(`${data.lastName}_BioData.pdf`);
+    template.style.display = "none";
+  });
 }
 
 function exportToJson() {
   const data = gatherData();
   if (!data) return;
-
-  const filename = generateFilename(data, "json");
 
   const bioData = {
     personalDetails: {
@@ -59,141 +105,45 @@ function exportToJson() {
       lastName: data.lastName,
       dateOfBirth: data.dob,
       gender: data.gender,
-      nationality: data.nationality,
+    },
+    healthStatistics: {
+      height: data.height,
+      weight: data.weight,
+      bloodType: data.bloodType,
     },
     contactInformation: {
       email: data.email,
-      phoneNumber: data.phone,
       address: data.address,
     },
     exportDate: data.now.toISOString(),
   };
 
-  const jsonString = JSON.stringify(bioData, null, 4);
-  const blob = new Blob([jsonString], { type: "application/json" });
-
+  const blob = new Blob([JSON.stringify(bioData, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = filename;
-
+  a.download = "BioData.json";
   document.body.appendChild(a);
   a.click();
 
-  setTimeout(function () {
+  setTimeout(() => {
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    window.URL.revokeObjectURL(url);
   }, 100);
-
-  alert(`Data prepared for download! File name: ${filename}`);
 }
 
-function exportToPdf() {
-  const data = gatherData();
-  if (!data) return;
-
-  const filename = generateFilename(data, "pdf");
-  const template = document.getElementById("pdf-content-template");
-
-  template.innerHTML = `
-        <h1 style="color: #007bff; border-bottom: 3px solid #007bff; padding-bottom: 5px;">BIO-DATA DOCUMENT</h1>
-        <p style="font-size: 0.8em; margin-bottom: 20px;">Export Date: ${data.now.toLocaleString()}</p>
-        
-        <h3>Personal Details</h3>
-        <div class="pdf-field">
-            <span class="pdf-label">First Name:</span>
-            <span class="pdf-value">${data.firstName}</span>
-        </div>
-        <div class="pdf-field">
-            <span class="pdf-label">Last Name:</span>
-            <span class="pdf-value">${data.lastName}</span>
-        </div>
-        <div class="pdf-field">
-            <span class="pdf-label">Date of Birth:</span>
-            <span class="pdf-value">${data.dob}</span>
-        </div>
-        <div class="pdf-field">
-            <span class="pdf-label">Gender:</span>
-            <span class="pdf-value">${data.gender}</span>
-        </div>
-        <div class="pdf-field">
-            <span class="pdf-label">Nationality:</span>
-            <span class="pdf-value">${data.nationality}</span>
-        </div>
-
-        <h3>Contact Information</h3>
-        <div class="pdf-field">
-            <span class="pdf-label">Email Address:</span>
-            <span class="pdf-value">${data.email}</span>
-        </div>
-        <div class="pdf-field">
-            <span class="pdf-label">Phone Number:</span>
-            <span class="pdf-value">${data.phone}</span>
-        </div>
-        <div class="pdf-field full-width" style="margin-top: 20px;">
-            <span class="pdf-label" style="display: block; margin-bottom: 5px;">Permanent Address:</span>
-            <span class="pdf-value address-field">${data.address}</span>
-        </div>
-    `;
-
-  template.style.display = "block";
-
-  html2canvas(template, {
-    scale: 3,
-    allowTaint: true,
-  })
-    .then((canvas) => {
-      const imgData = canvas.toDataURL("image/jpeg", 1.0);
-      const pdf = new jsPDF({
-        orientation: "p",
-        unit: "in",
-        format: "letter",
-      });
-
-      const pdfWidth = 8.5;
-      const pdfHeight = 11;
-      const imgProps = pdf.getImageProperties(imgData);
-      const imgHeight = (imgProps.height * pdfWidth) / imgProps.width;
-
-      let heightLeft = imgHeight;
-      let position = 0;
-
-      pdf.addImage(imgData, "JPEG", 0, position, pdfWidth, imgHeight);
-      heightLeft -= pdfHeight;
-
-      while (heightLeft >= 0) {
-        position = heightLeft - imgHeight;
-        pdf.addPage();
-        pdf.addImage(imgData, "JPEG", 0, position, pdfWidth, imgHeight);
-        heightLeft -= pdfHeight;
-      }
-
-      template.style.display = "none";
-      pdf.save(filename);
-      alert(`Data exported successfully as PDF! File name: ${filename}`);
-    })
-    .catch((error) => {
-      template.style.display = "none";
-      console.error("PDF generation error:", error);
-      alert(
-        "An error occurred during PDF generation. Please check the console.",
-      );
-    });
-}
-
+// 5. Initialize
 document.addEventListener("DOMContentLoaded", () => {
-  const phoneInput = document.getElementById("phone_number");
+  initAutocomplete();
   const toggle = document.getElementById("dark-mode-toggle");
   const prefersDarkScheme = window.matchMedia("(prefers-color-scheme: dark)");
 
   const currentTheme = localStorage.getItem("theme");
-  if (
-    currentTheme === "dark" ||
-    (currentTheme === null && prefersDarkScheme.matches)
-  ) {
+  if (currentTheme === "dark" || (currentTheme === null && prefersDarkScheme.matches)) {
     document.body.classList.add("dark-mode");
     toggle.checked = true;
   }
+
   toggle.addEventListener("change", () => {
     if (toggle.checked) {
       document.body.classList.add("dark-mode");
@@ -202,25 +152,5 @@ document.addEventListener("DOMContentLoaded", () => {
       document.body.classList.remove("dark-mode");
       localStorage.setItem("theme", "light");
     }
-  });
-
-  phoneInput.addEventListener("input", (e) => {
-    const x = e.target.value
-      .replace(/\D/g, "")
-      .match(/(\d{0,3})(\d{0,3})(\d{0,4})/);
-    e.target.value = !x[2]
-      ? x[1]
-      : `(${x[1]}) ${x[2]}${x[3] ? `-${x[3]}` : ""}`;
-  });
-
-  const inputs = document.querySelectorAll(
-    "#bioDataForm input, #bioDataForm textarea, #bioDataForm select",
-  );
-  inputs.forEach((input) => {
-    input.addEventListener("blur", () => {
-      if (input.checkValidity()) {
-        input.classList.remove("invalid");
-      }
-    });
   });
 });
